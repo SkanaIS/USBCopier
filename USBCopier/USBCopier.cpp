@@ -36,7 +36,7 @@ wstring GetFormattedCurrentTime()
     return ss.str();
 }
 
-// 将 wstring 转换为 UTF-8 编码的 string
+// 转换编码
 string WStringToUTF8(const wstring& wstr)
 {
     wstring_convert<codecvt_utf8<wchar_t>> conv;
@@ -121,7 +121,6 @@ void CheckUSB()
     }
 }
 
-// 窗口过程
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
