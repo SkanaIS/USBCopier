@@ -31,6 +31,7 @@ mutex logMutex;
 HMENU hMenu = nullptr;
 unordered_set<wstring> whitelistExtensions;
 bool enableWhitelist = false;
+wstring targetVolumeLabel; // 目标卷标
 
 // 将字符串转换为小写
 wstring ToLower(const wstring& str)
@@ -70,14 +71,13 @@ void LogMessage(const wstring& message)
     }
 }
 
-// 创建默认配置文件
-void CreateDefaultConfig()
+// 追加配置项
+void AppendConfigItem(const wstring& item, const wstring& value)
 {
     wstring configPath = L"D:\\save\\config.txt";
-    wofstream configFile(configPath);
+    wofstream configFile(configPath, ios::app);
     if (configFile.is_open()) {
-        configFile << L"enableWhitelist=true\n";
-        configFile << L"whitelist=doc,docx,pptx\n";
+        configFile << item << L"=" << value << L"\n";
         configFile.close();
     }
 }
@@ -86,8 +86,13 @@ void CreateDefaultConfig()
 void ReadConfig()
 {
     wstring configPath = L"D:\\save\\config.txt";
+    bool hasEnableWhitelist = false;
+    bool hasWhitelist = false;
+    bool hasTargetVolumeLabel = false;
+
     if (!PathFileExistsW(configPath.c_str())) {
-        CreateDefaultConfig();
+        ofstream configFile(configPath);
+        configFile.close();
     }
 
     wifstream configFile(configPath);
@@ -97,8 +102,10 @@ void ReadConfig()
             line = ToLower(line);
             if (line.find(L"enablewhitelist=true") != wstring::npos) {
                 enableWhitelist = true;
+                hasEnableWhitelist = true;
             }
             else if (line.find(L"whitelist=") != wstring::npos) {
+                hasWhitelist = true;
                 size_t pos = line.find(L"=");
                 if (pos != wstring::npos) {
                     wstring extensions = line.substr(pos + 1);
@@ -109,8 +116,26 @@ void ReadConfig()
                     }
                 }
             }
+            else if (line.find(L"targetvolumelabel=") != wstring::npos) {
+                hasTargetVolumeLabel = true;
+                size_t pos = line.find(L"=");
+                if (pos != wstring::npos) {
+                    targetVolumeLabel = line.substr(pos + 1);
+                }
+            }
         }
         configFile.close();
+    }
+
+    // 如果配置项不存在，则追加
+    if (!hasEnableWhitelist) {
+        AppendConfigItem(L"enableWhitelist", L"true");
+    }
+    if (!hasWhitelist) {
+        AppendConfigItem(L"whitelist", L"docx,xlsx,pptx,png,jpg,pdf");
+    }
+    if (!hasTargetVolumeLabel) {
+        AppendConfigItem(L"targetVolumeLabel", L"211");
     }
 }
 
@@ -176,6 +201,9 @@ bool CopyDirectory(const wstring& src, const wstring& dst)
     hFind = FindFirstFileW(path.c_str(), &findData);
     if (hFind == INVALID_HANDLE_VALUE) return false;
     do {
+        if (wcscmp(findData.cFileName, L"System Volume Information") == 0) {
+            continue; // 跳过 System Volume Information 目录
+        }
         if (wcscmp(findData.cFileName, L".") == 0 ||
             wcscmp(findData.cFileName, L"..") == 0)
             continue;
@@ -186,15 +214,15 @@ bool CopyDirectory(const wstring& src, const wstring& dst)
                 GetLastError() != ERROR_ALREADY_EXISTS) {
                 continue;
             }
-            wstring output = L"Copy Directory: '" + srcPath + L"' to '" + dstPath + L"'\n";
+            wstring output = L"复制目录: '" + srcPath + L"' 到 '" + dstPath + L"'\n";
             OutputDebugStringW(output.c_str());
-            LogMessage((L"Copy Directory: '" + srcPath + L"' to '" + dstPath + L"'\n").c_str());
+            LogMessage((L"复制目录: '" + srcPath + L"' 到 '" + dstPath + L"'\n").c_str());
             CopyDirectory(srcPath, dstPath);
         }
         else {
             if (IsFileInWhitelist(findData.cFileName) && !PathFileExistsW(dstPath.c_str())) {
                 if (CopyFileW(srcPath.c_str(), dstPath.c_str(), FALSE)) {
-                    wstring output = L"Copy File: '" + srcPath + L"' to '" + dstPath + L"'\n";
+                    wstring output = L"复制文件: '" + srcPath + L"' 到 '" + dstPath + L"'\n";
                     OutputDebugStringW(output.c_str());
                     LogMessage(output);
                 }
@@ -221,8 +249,8 @@ void CheckUSB()
             wstring volumeName = volumeNameBuffer;
 
             // 检查卷标
-            if (volumeName == L"211") {
-                wstring output = L"***Target USB Drive Found: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
+            if (!targetVolumeLabel.empty() && volumeName == targetVolumeLabel) {
+                wstring output = L"***目标U盘已找到: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
                 OutputDebugStringW(output.c_str());
                 LogMessage(output);
 
@@ -233,8 +261,8 @@ void CheckUSB()
                 thread copyThread(CopyDirectory, L"D:\\save", target);
                 copyThread.detach();
             }
-            else {
-                wstring output = L"USB Drive Found: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
+            else if (targetVolumeLabel.empty()) {
+                wstring output = L"U盘已找到: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
                 OutputDebugStringW(output.c_str());
                 LogMessage(output);
 
@@ -256,7 +284,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message) {
     case WM_DEVICECHANGE:
         if (wParam == DBT_DEVICEARRIVAL) {
-            wstring output = L"Message: DBT_DEVICEARRIVAL\n";
+            wstring output = L"消息: DBT_DEVICEARRIVAL\n";
             OutputDebugStringW(output.c_str());
             LogMessage(output);
             CheckUSB();
@@ -284,23 +312,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (LOWORD(wParam) == IDM_AUTOSTART) {
             UINT state = GetMenuState(hMenu, IDM_AUTOSTART, MF_BYCOMMAND);
             if (state & MF_CHECKED) {
-                MessageBoxW(hWnd, L"USBCopier no longer starts with Windows.", L"USBCopier", MB_OK);
+                MessageBoxW(hWnd, L"USBCopier 不再随 Windows 启动。", L"USBCopier", MB_OK);
                 CancelAutoStart();
                 CheckMenuItem(hMenu, IDM_AUTOSTART, MF_BYCOMMAND | MF_UNCHECKED);
             }
             else {
-                MessageBoxW(hWnd, L"USBCopier now starts with Windows.", L"USBCopier", MB_OK);
+                MessageBoxW(hWnd, L"USBCopier 现在随 Windows 启动。", L"USBCopier", MB_OK);
                 SetAutoStart();
                 CheckMenuItem(hMenu, IDM_AUTOSTART, MF_BYCOMMAND | MF_CHECKED);
             }
         }
-		if (LOWORD(wParam) == IDM_CONFIG) {
-			// 打开配置文件
-			ShellExecuteW(hWnd, L"open", L"D:\\save\\config.txt", nullptr, nullptr, SW_SHOWNORMAL);
-		}
-		if (LOWORD(wParam) == IDM_ABOUT) {
-			MessageBoxW(hWnd, L"USBCopier is developed by Kazea. Thank you for using it.\n\nIn accordance with the principles of free software, you are free to use, modify, and distribute this program under the CC BY 4.0 license.", L"About USBCopier", MB_OK|MB_ICONINFORMATION);
-		}
+        if (LOWORD(wParam) == IDM_CONFIG) {
+            // 打开配置文件
+            ShellExecuteW(hWnd, L"open", L"D:\\save\\config.txt", nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        if (LOWORD(wParam) == IDM_ABOUT) {
+            MessageBoxW(hWnd, L"USBCopier 由 Kazea 开发。感谢您的使用。\n\n根据自由软件的原则，您可以自由使用、修改和分发此程序，遵循 CC BY 4.0 许可证。", L"关于 USBCopier", MB_OK | MB_ICONINFORMATION);
+        }
         break;
     case WM_DESTROY:
         Shell_NotifyIcon(NIM_DELETE, &nid);
@@ -343,8 +371,8 @@ void InitWindow()
 
     hMenu = CreatePopupMenu();
     AppendMenu(hMenu, MF_STRING, IDM_AUTOSTART, TEXT("随 Windows 启动"));
-	AppendMenu(hMenu, MF_STRING, IDM_CONFIG, TEXT("配置 USBCopier"));
-	AppendMenu(hMenu, MF_STRING, IDM_ABOUT, TEXT("关于 USBCopier"));
+    AppendMenu(hMenu, MF_STRING, IDM_CONFIG, TEXT("配置 USBCopier"));
+    AppendMenu(hMenu, MF_STRING, IDM_ABOUT, TEXT("关于 USBCopier"));
     AppendMenu(hMenu, MF_STRING, IDM_EXIT, L"退出 USBCopier");
 }
 
@@ -354,7 +382,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     hInst = hInstance;
     ReadConfig(); // 读取配置文件
     InitWindow();
-    LogMessage(L"#USBCopier Started#\n   - This program is developed by Kazea. Thank you for using it.\n   - In accordance with the principles of free software, you are free to use, modify, and distribute this program under the CC BY 4.0 license.\n   *\n");
+    LogMessage(L"#USBCopier 启动#\n   - 此程序由 Kazea 开发。感谢您的使用。\n   - 根据自由软件的原则，您可以自由使用、修改和分发此程序，遵循 CC BY 4.0 许可证。\n   *\n");
     CheckUSB();
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
