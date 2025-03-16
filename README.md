@@ -11,7 +11,7 @@
 
 ## 快速上手
 1. 从[releases](https://github.com/SkanaIS/USBCopier/releases/latest)中下载最新版本的USBCopier。
-2. 保存到任意路径，如**'D:\USBCopier.exe'**。
+2. 保存到任意路径，如'D:\USBCopier.exe'。
 3. 双击运行。
 
 ## 构建
